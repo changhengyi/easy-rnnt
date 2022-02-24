@@ -1,0 +1,48 @@
+### files
+trainset_path: "/home/changhengyi/rnnt-exp/tpoasr/dataset/trainset_tiny.tsv"
+devset_path: ""
+testset_path: "/home/changhengyi/rnnt-exp/tpoasr/dataset/testset_wpbpe5000.tsv"
+dict: /home/changhengyi/rnnt-exp/tpoasr/dict.txt
+wp_model: /home/changhengyi/rnnt-exp/tpoasr/wp.model
+save_path: /home/changhengyi/rnnt-exp/tpoasr
+resume: "/home/changhengyi/rnnt-exp/tpoasr/model.epoch-1"
+# resume: /home/changhengyi/asr-exp/tpoasr/asr/trainset_wpbpe5000/conv2Lblstm512H5L_sumfwdbwd_chunkL-1R40_drop4_lstm_transducer1024H2L_adam_lr0.001_bs15_ctc0.3_8GPU/model.epoch-30
+
+### data
+num_workers: 2
+min_n_frames: 0
+max_n_frames: 1600
+vocab: 4980
+
+### encoder
+subsample_factor: 4
+enc_layers: 5
+enc_input_dim: 640
+enc_num_units: 512
+### decoder
+dec_layers: 2
+dec_num_units: 1024
+emb_dim: 512
+joint_dim: 512
+### loss
+clip_grad_norm: 5.0
+ctc_weight: 0.3
+rnnt_weight: 0.7
+param_init: 0.1
+ctc_lsm_prob: 0.1
+ctc_fc_list: "512"
+dropout_dec: 0.4
+dropout_emb: 0.4
+
+### optimization
+batch_size: 15
+optimizer: adam
+n_epochs: 30
+print_step: 1000
+sort_stop_epoch: 100
+lr: 1e-3
+weight_decay: 1e-6
+lr_decay_start_epoch: 10
+lr_decay_rate: 0.85
+dynamic_batching: True
+shuffle_bucket: False
