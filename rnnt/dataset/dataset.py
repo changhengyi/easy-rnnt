@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 
 
 class ASRDataset(Dataset):
-    def __init__(self, tsv_path, dict_path, wp_model, min_n_frames=-1, max_n_frames=6000, subsample_factor=4):
+    def __init__(self, tsv_path, cmvn_path=None, dict_path=None, wp_model=None, min_n_frames=-1, max_n_frames=6000, subsample_factor=4):
         super(Dataset, self).__init__()
         # Load dataset tsv file
         chunk = pd.read_csv(tsv_path, encoding='utf-8',
@@ -28,6 +28,11 @@ class ASRDataset(Dataset):
         df = df.sort_values(by=['xlen'], ascending=True)
         self.df = df.reset_index()
 
+        if cmvn_path is not None:
+            self.cmvn = self.load_cmvn(cmvn_path)
+        else:
+            self.cmvn = None
+
 
     def __len__(self):
         return len(self.df)
@@ -42,6 +47,8 @@ class ASRDataset(Dataset):
         # inputs
         feat_path = self.df['feat_path'][i]
         xs = kaldiio.load_mat(feat_path)
+        if self.cmvn is not None:
+            xs = self.apply_cmvn(xs)
         xlen = self.df['xlen'][i]
 
         # main outputs
@@ -58,3 +65,39 @@ class ASRDataset(Dataset):
         }
 
         return mini_batch_dict
+
+
+    def load_cmvn(self, cmvn_path):
+        with open(cmvn_path, "r") as f:
+            cmvn1 = [eval(x) for x in f.readline().strip().split()]
+            cmvn2 = [eval(x) for x in f.readline().strip().split()]
+        cmvn = [cmvn1, cmvn2]
+        cmvn = np.array(cmvn)
+        return cmvn
+
+
+    def apply_cmvn(self, feat):    
+        stats_0, stats_1 = self.cmvn[0], self.cmvn[1]
+        dim = 80
+        fream_num = feat.shape[0]
+        count = stats_0[dim]
+        norm = np.zeros([2,80])
+        for d in range(80):
+            mean = stats_0[d]/count
+            var = (stats_1[d]/count) - mean*mean
+            floor = 1.0e-20
+            if var < floor:
+                print("Flooring cepstral variance from {} to {}".format(var, floor))
+                var = floor
+            scale = 1.0 / np.sqrt(var)
+            if scale != scale or 1/scale == 0.0:
+                print("ERROR:NaN or infinity in cepstral mean/variance computation")
+                return  
+            offset = -(mean*scale)
+            norm[0][d] = offset
+            norm[1][d] = scale
+        res = np.zeros([fream_num, dim])
+        for t in range(fream_num):
+            for d in range(dim):
+                res[t][d] = feat[t][d] * norm[1][d] + norm[0][d]
+        return res

@@ -178,10 +178,16 @@ def pad_list(xs, pad_value=0., pad_left=False):
     return xs_pad
 
 
-def hyp2text(hyps, id2token):
+def hyp2text_wp(hyps, id2token):
     text = [id2token[hyp_id] for hyp_id in hyps]
     text = "".join(text)
     text = text.replace("▁", " ").strip(" ")
+    return text
+
+
+def hyp2text_char(hyps, id2token):
+    text = [id2token[hyp_id] for hyp_id in hyps]
+    text = " ".join(text)
     return text
 
 

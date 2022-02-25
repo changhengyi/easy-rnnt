@@ -1,6 +1,6 @@
 import torch
 import os
-from rnnt.utils import hyp2text, compute_wer
+from rnnt.utils import hyp2text_char, compute_wer, hyp2text_wp
 from tqdm import tqdm
 
 class Scheduler(object):
@@ -30,7 +30,7 @@ class Scheduler(object):
                 param_group['eps'] = self.lr
             else:
                 param_group['lr'] = self.lr
-        self.logger.info("Learning rate update to {self.lr}")
+        self.logger.info(f"Learning rate update to {self.lr}")
 
     
     def zero_grad(self, set_to_none=False):
@@ -49,7 +49,7 @@ class Scheduler(object):
         self._update_lr()
 
 
-    def eval_wordpiece(self, model, dataloader, rank):
+    def eval_char(self, model, dataloader, rank):
         print(len(dataloader))
         if rank == 0:
             pbar = tqdm(total=len(dataloader))
@@ -60,7 +60,47 @@ class Scheduler(object):
             assert len(hyps) == len(batch['text'])
             for i in range(len(hyps)):
                 ref = batch['text'][i]
-                hyp = hyp2text(hyps[i], self.id2token)
+                hyp = hyp2text_wp(hyps[i], self.id2token)
+
+                self.logger.debug("{} | ref: {}".format(batch['utt_ids'][i], ref))
+                self.logger.debug("{} | hyp: {}".format(batch['utt_ids'][i], hyp))
+                
+                err_b, sub_b, ins_b, del_b = compute_wer(ref.split(" "), hyp.split(" "))
+                wer += err_b
+                n_sub_w += sub_b
+                n_ins_w += ins_b
+                n_del_w += del_b
+                n_word += len(ref.split(' '))
+
+            if rank == 0:
+                pbar.update(num_samples)
+
+        wer /= n_word
+        n_sub_w /= n_word
+        n_ins_w /= n_word
+        n_del_w /= n_word
+
+        self.logger.info('WER: %.2f %% SUB: %.2f / INS: %.2f / DEL: %.2f' % (wer, n_sub_w, n_ins_w, n_del_w))
+        dataloader.reset(is_new_epoch=True)
+        if rank == 0:
+            pbar.close()
+
+
+    def eval_testset(self, model, dataloader, rank, mode='char'):
+        print(len(dataloader))
+        if rank == 0:
+            pbar = tqdm(total=len(dataloader))
+        wer, n_sub_w, n_ins_w, n_del_w, n_word = 0, 0, 0, 0, 0
+        for batch in dataloader:
+            num_samples = len(batch['utt_ids'])
+            hyps = model.decode_greedy(batch['xs'])
+            assert len(hyps) == len(batch['text'])
+            for i in range(len(hyps)):
+                ref = batch['text'][i]
+                if mode == 'char':
+                    hyp = hyp2text_char(hyps[i], self.id2token)
+                elif mode == 'wp':
+                    hyp = hyp2text_wp(hyps[i], self.id2token)
 
                 self.logger.debug("{} | ref: {}".format(batch['utt_ids'][i], ref))
                 self.logger.debug("{} | hyp: {}".format(batch['utt_ids'][i], hyp))
@@ -87,9 +127,8 @@ class Scheduler(object):
             pbar.close()
 
     
-    def add_observation(self, observation):
-        if self._step % self.args.print_step == 0:
-            self.logger.info("LOSS:{} CTC:{} RNNT:{}".format(observation['loss'], observation["loss_ctc"], observation['loss_transducer']))
+    def add_observation(self, loss_dict):
+        self.logger.info("Train Loss: {:.3f} | Dev Loss: {:.3f}".format(loss_dict['train_loss'], loss_dict["dev_loss"]))
 
 
     def save(self, model, remove_old=True):

@@ -26,6 +26,7 @@ def train(args):
 
     ### init train loader
     train_loader = build_dataloader(args, args.trainset_path, args.batch_size, num_workers=args.num_workers, pin_memory=False, distributed=True)
+    dev_loader = build_dataloader(args, args.testset_path, 1, num_workers=args.num_workers)
     test_loader = build_dataloader(args, args.testset_path, 1, num_workers=args.num_workers)
 
     ### init model
@@ -42,17 +43,11 @@ def train(args):
     optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = Scheduler(args, optimizer, logger)
 
-    if args.local_rank == 0:
-        scheduler.eval_wordpiece(model.module, test_loader, args.local_rank)
-
-    return
-
     ### start training
     for epoch in range(args.n_epochs):
         if args.local_rank == 0:
             pbar_epoch = tqdm(total=len(train_loader))
             
-        
         for batch_data in train_loader:
             num_samples = len(batch_data['utt_ids']) * num_replicas
 
@@ -61,7 +56,10 @@ def train(args):
             loss.backward()
             loss.detach()
             del loss
-            scheduler.add_observation(observation)
+            if scheduler._step % args.print_step == 0:
+                batch_dev = next(iter(dev_loader))
+                _, dev_observation = model(batch_dev, is_eval=True)
+                scheduler.add_observation({"train_loss": observation["loss"], "dev_loss": dev_observation["loss"]})
             scheduler.step()
             scheduler.zero_grad(set_to_none=True)
 
@@ -69,9 +67,10 @@ def train(args):
                 pbar_epoch.update(num_samples)
 
         if args.local_rank == 0:
-            scheduler.eval_wordpiece(model.module, test_loader, args.local_rank)
+            scheduler.eval_testset(model.module, test_loader, args.local_rank, args.mode)
             scheduler.save(model.module)
             pbar_epoch.close()
+        scheduler.epoch()
         
         train_loader.reset(is_new_epoch=True)
         
