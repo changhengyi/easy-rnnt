@@ -2,6 +2,8 @@ import copy
 import numpy as np
 import torch
 import random
+import kaldiio
+import torchaudio
 
 def tensor2np(x):
     if x is None:
@@ -278,3 +280,54 @@ def compute_wer(ref, hyp, normalize=False):
         wer /= len(ref)
 
     return wer * 100, n_sub * 100, n_ins * 100, n_del * 100
+
+
+class Feature:
+    def __init__(self, cmvn_path=None):
+        if cmvn_path is not None:
+            self.cmvn = kaldiio.load_mat(cmvn_path)
+            stats_0, stats_1 = self.cmvn[0], self.cmvn[1]
+            self.dim = 80
+            count = stats_0[self.dim]
+            self.norm = np.zeros([2,self.dim])
+            for d in range(self.dim):
+                mean = stats_0[d]/count
+                var = (stats_1[d]/count) - mean*mean
+                floor = 1.0e-20
+                if var < floor:
+                    print("Flooring cepstral variance from {} to {}".format(var, floor))
+                    var = floor
+                scale = 1.0 / np.sqrt(var)
+                if scale != scale or 1/scale == 0.0:
+                    print("ERROR:NaN or infinity in cepstral mean/variance computation")
+                    return  
+                offset = -(mean*scale)
+                self.norm[0][d] = offset
+                self.norm[1][d] = scale
+        else:
+            self.norm = None
+
+    def extract_feat(self, audio_path):
+        waveform, _ = torchaudio.load(audio_path, normalize=False)
+        fbank = torchaudio.compliance.kaldi.fbank(
+                        waveform.double(),
+                        num_mel_bins=80,
+                        frame_length=25,
+                        frame_shift=10,
+                        dither=0,
+                        htk_compat=True,
+                        window_type="hamming",
+                        sample_frequency=16000
+                    ).numpy()
+        if self.norm is not None:
+            fbank = self.apply_cmvn(fbank)
+        fbank = torch.from_numpy(fbank).float()
+        return fbank
+
+    def apply_cmvn(self, fbank):
+        fream_num = fbank.shape[0]
+        res = np.zeros([fream_num, self.dim])
+        for t in range(fream_num):
+            for d in range(self.dim):
+                res[t][d] = fbank[t][d] * self.norm[1][d] + self.norm[0][d]
+        return res

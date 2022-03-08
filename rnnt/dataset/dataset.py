@@ -9,6 +9,7 @@ class ASRDataset(Dataset):
     def __init__(self, tsv_path, cmvn_path=None, dict_path=None, wp_model=None, min_n_frames=-1, max_n_frames=6000, subsample_factor=4):
         super(Dataset, self).__init__()
         # Load dataset tsv file
+        self.name = tsv_path.split("/")[-1].rsplit(".", 1)[0]
         chunk = pd.read_csv(tsv_path, encoding='utf-8',
                             delimiter='\t', chunksize=1000000)
         df = pd.concat(chunk)
@@ -29,7 +30,9 @@ class ASRDataset(Dataset):
         self.df = df.reset_index()
 
         if cmvn_path is not None:
-            self.cmvn = self.load_cmvn(cmvn_path)
+            print(f"Load cmvn: {cmvn_path}")
+            # self.cmvn = self.load_cmvn(cmvn_path)
+            self.cmvn = kaldiio.load_mat(cmvn_path)
         else:
             self.cmvn = None
 

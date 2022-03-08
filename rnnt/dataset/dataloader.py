@@ -20,6 +20,7 @@ class ASRDataLoader(DataLoader):
 
         self.epoch = 0  # counter
         self.sort_stop_epoch = sort_stop_epoch
+        self.name = dataset.name
 
     def __len__(self):
         """Number of utterances."""

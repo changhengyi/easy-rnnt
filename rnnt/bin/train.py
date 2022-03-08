@@ -24,10 +24,10 @@ def train(args):
     logging.basicConfig(filename = log_path, level = logging.INFO, format = '%(asctime)s[%(levelname)s]: %(message)s')
     logger = logging.getLogger()
 
-    ### init train loader
+    ### init data loader
+    test_loaders = [build_dataloader(args, x, 1, num_workers=args.num_workers) for x in args.testset_paths]
     train_loader = build_dataloader(args, args.trainset_path, args.batch_size, num_workers=args.num_workers, pin_memory=False, distributed=True)
-    dev_loader = build_dataloader(args, args.testset_path, 1, num_workers=args.num_workers)
-    test_loader = build_dataloader(args, args.testset_path, 1, num_workers=args.num_workers)
+    dev_loader = build_dataloader(args, args.devset_path, 1, num_workers=args.num_workers)
 
     ### init model
     model = ASR(args)
@@ -43,6 +43,12 @@ def train(args):
     optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = Scheduler(args, optimizer, logger)
 
+    # # 临时的，用于测试
+    # if args.local_rank == 0:
+    #     scheduler.eval_testset(model.module, test_loaders, args.local_rank, args.mode)
+    # return
+    # # /临时的，用于测试
+
     ### start training
     for epoch in range(args.n_epochs):
         if args.local_rank == 0:
@@ -56,10 +62,13 @@ def train(args):
             loss.backward()
             loss.detach()
             del loss
-            if scheduler._step % args.print_step == 0:
+            if scheduler._step % args.print_step == 0 and args.local_rank == 0:
                 batch_dev = next(iter(dev_loader))
                 _, dev_observation = model(batch_dev, is_eval=True)
                 scheduler.add_observation({"train_loss": observation["loss"], "dev_loss": dev_observation["loss"]})
+
+            if args.clip_grad_norm > 0:
+                total_norm = torch.nn.utils.clip_grad_norm_(model.module.parameters(), args.clip_grad_norm)
             scheduler.step()
             scheduler.zero_grad(set_to_none=True)
 
@@ -67,7 +76,7 @@ def train(args):
                 pbar_epoch.update(num_samples)
 
         if args.local_rank == 0:
-            scheduler.eval_testset(model.module, test_loader, args.local_rank, args.mode)
+            scheduler.eval_testset(model.module, test_loaders, args.local_rank, args.mode)
             scheduler.save(model.module)
             pbar_epoch.close()
         scheduler.epoch()

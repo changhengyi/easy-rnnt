@@ -1,15 +1,6 @@
-### files
-trainset_path: "/home/changhengyi/rnnt-exp/chinese/datasets/train.tsv"
-devset_path: "/home/changhengyi/rnnt-exp/chinese/datasets/dev.tsv"
-testset_paths:
-  - "/home/changhengyi/rnnt-exp/chinese/datasets/test.tsv"
-  - "/home/changhengyi/rnnt-exp/chinese/datasets/test_hard.tsv"
-#- "/home/changhengyi/rnnt-exp/chinese/datasets/speechio_1.tsv"
-dict: /home/changhengyi/rnnt-exp/chinese/dict/dict.txt
+dict: /home/changhengyi/rnnt-decode_test/dict.txt
+cmvn_path: /home/changhengyi/rnnt-decode_test/cmvn.ark
 wp_model: ""
-save_path: /home/changhengyi/rnnt-exp/chinese/asr
-resume: ""
-# resume: "/home/changhengyi/rnnt-exp/chinese/asr/best.model"
 
 ### data
 num_workers: 2

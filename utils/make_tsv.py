@@ -43,6 +43,14 @@ def make_tsv(text_path, feats_path, dict_path, write_path):
 
 
 def main():
+    for dataset in ['1', '2', '3', '4']:
+        text_path = f"/home/dev-data/speechIO/SPEECHIO_ASR_ZH0000{dataset}/text"
+        feats_path = f"/home/dev-data/speechIO/SPEECHIO_ASR_ZH0000{dataset}/feats.scp"
+        dict_path = "/home/changhengyi/rnnt-exp/chinese/dict/dict.txt"
+        write_path = f"/home/changhengyi/rnnt-exp/chinese/datasets/speechio_{dataset}.tsv"
+        make_tsv(text_path, feats_path, dict_path, write_path)
+
+def main2():
     for dataset in ['dev', 'test', 'test_hard', 'train']:
         text_path = f"/home/changhengyi/rnnt-exp/chinese/{dataset}/text"
         feats_path = f"/home/changhengyi/rnnt-exp/chinese/{dataset}/feats.scp"
@@ -51,4 +59,4 @@ def main():
         make_tsv(text_path, feats_path, dict_path, write_path)
 
 if __name__ == "__main__":
-    main()
+    main2()

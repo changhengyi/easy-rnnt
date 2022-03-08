@@ -24,7 +24,7 @@ class ASR(ModelBase):
         self.dec = RNNTransducer(args)
 
         if args.resume != "":
-            ckp = torch.load(args.resume,map_location=self.device)
+            ckp = torch.load(args.resume,map_location=self.device)["model_state_dict"]
             new_state_dict = OrderedDict()
             for m in ckp:
                 if m.startswith("enc."):
@@ -36,6 +36,7 @@ class ASR(ModelBase):
                 if m.startswith("dec"):
                     new_state_dict[m.split('dec.', 1)[1]] = ckp[m]
             self.dec.load_state_dict(new_state_dict)
+            print("=============Load resume model==============")
 
 
     def forward(self, batch, is_eval=False):
@@ -73,8 +74,20 @@ class ASR(ModelBase):
 
 
     def decode_greedy(self, xs):
-        eouts, elens = self.encode(xs)
+        self.eval()
+        with torch.no_grad():
+            eouts, elens = self.encode(xs)
+            hyps = self.dec.greedy(eouts, elens)
 
-        hyps = self.dec.greedy(eouts, elens)
+        return hyps
+
+
+    def decode_beam_search(self, xs, beam_size=3):
+        self.eval()
+        with torch.no_grad():
+            eouts, elens = self.encode(xs)
+            hyps = self.dec.beam_search(eouts, elens, beam_size)
+
+        # hyps = [hyp[0]['hyp'][1:] for hyp in hyps]
 
         return hyps

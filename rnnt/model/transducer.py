@@ -101,7 +101,8 @@ class RNNTransducer(ModelBase):
                                                        dstate['cxs'][lth:lth + 1]))
             new_hxs.append(h)
             new_cxs.append(c)
-            ys_emb = self.dropout(ys_emb)
+            if self.training:
+                ys_emb = self.dropout(ys_emb)
 
         # Repackage
         new_dstate['hxs'] = torch.cat(new_hxs, dim=0)
@@ -137,8 +138,10 @@ class RNNTransducer(ModelBase):
             ys_emb (FloatTensor): `[B, vocab, emb_dim]`
 
         """
-        if self.embed_cache is None or self.training:
+        if self.training:
             ys_emb = self.dropout_emb(self.embed(indices))
+        elif self.embed_cache is None:
+            ys_emb = self.embed(indices)
         else:
             ys_emb = self.embed_cache[indices]
         return ys_emb
@@ -235,6 +238,7 @@ class RNNTransducer(ModelBase):
             hyps (List): length `[B]`, each of which contains arrays of size `[L]`
             aw: dummy
         """
+        self.training = False
         bs = eouts.size(0)
 
         hyps = []
@@ -256,17 +260,17 @@ class RNNTransducer(ModelBase):
                     dout, dstate = self.recurrency(self.embed_token_id(y), dstate)
 
             hyps += [hyp_b]
+        self.training = True
         return hyps
 
 
-    def initialize_beam(self, hpy, hxs, cxs):
+    def initialize_beam(self, hpy, dstate):
         hyps = [{'hyp': hpy,
                  'time':[0],
                  'hyp_ids_str': '',
                  'score_rnnt': 0.,
                  'dout': None,
-                 'hxs': hxs,
-                 'cxs': cxs,
+                 'dstate': dstate,
                  'path_len': 0,
                  'update_pred_net': True}]
         return hyps
@@ -274,22 +278,31 @@ class RNNTransducer(ModelBase):
 
     def batchfy_pred_net(self, hyps, cache):
         batch_hyps = [beam for beam in hyps if beam['update_pred_net']]
+        if len(batch_hyps) == 0:
+            return hyps, cache
+
+        ys = torch.zeros((len(batch_hyps), 1), dtype=torch.int64, device=self.device)
+        for i, beam in enumerate(batch_hyps):
+            ys[i] = beam['hyp'][-1]
+        dstates_prev = {'hxs': torch.cat([beam['dstate']['hxs'] for beam in batch_hyps], dim=1),
+                        'cxs': torch.cat([beam['dstate']['cxs'] for beam in batch_hyps], dim=1)}
+        douts, dstates = self.recurrency(self.embed_token_id(ys), dstates_prev)
+
         hyp_ids_strs = [beam['hyp_ids_str'] for beam in hyps]
-        for beam in batch_hyps:
+        for i, beam in enumerate(batch_hyps):
+            dstate = {'hxs': dstates['hxs'][:, i:i + 1],
+                      'cxs': dstates['cxs'][:, i:i + 1]}
             index = hyp_ids_strs.index(beam['hyp_ids_str'])
 
-            y = torch.zeros((1,1), dtype=torch.int64).fill_(beam['hyp'][-1])
-            dout, hxs, cxs = self.recurrency(self.embed(y), beam['hxs'], beam['cxs'])
-
+            hyps[index]['dout'] = douts[i:i + 1]
+            hyps[index]['dstate'] = dstate
+            assert hyps[index]['update_pred_net']
             hyps[index]['update_pred_net'] = False
-            hyps[index]['dout'] = dout
-            hyps[index]['hxs'] = hxs
-            hyps[index]['cxs'] = cxs
-            
+
+            # register to cache
             cache[beam['hyp_ids_str']] = {
-                'dout': dout,
-                'hxs': hxs,
-                'cxs': cxs
+                'dout': douts[i:i + 1],
+                'dstate': dstate
             }
         
         return hyps, cache
@@ -315,63 +328,69 @@ class RNNTransducer(ModelBase):
         return hyps
 
 
-    def beam_search(self, eouts, beam_width):
-        state_cache = OrderedDict()
-        frame_size = eouts.size()[1]
-        hxs, cxs = torch.zeros([2, 1, 1024]), torch.zeros([2, 1, 1024])
-        hyps = self.initialize_beam([2], hxs, cxs)
-        
-        for t in range(frame_size):
-            hyps, state_cache = self.batchfy_pred_net(hyps, state_cache)
-            douts = torch.cat([beam['dout'] for beam in hyps], dim=0)
-            logits = self.joint(eouts[:, t:t + 1].repeat([len(hyps), 1, 1]), douts)
-            scores_rnnt = torch.log_softmax(logits.squeeze(2).squeeze(1), dim=-1)  # `[B, vocab]`
+    def beam_search(self, eouts, elens, beam_width):
+        self.training = False
+        bs = eouts.size(0)
+        hyps = []
+        for b in range(bs):
+            state_cache = OrderedDict()
+            hxs, cxs = eouts.new_zeros(2, 1, 1024), eouts.new_zeros(2, 1, 1024)
 
-            new_hyps = []
-            for j, beam in enumerate(hyps):
-                # Transducer scores
-                total_scores_rnnt = beam['score_rnnt'] + scores_rnnt[j]
-                total_scores_topk, topk_ids = torch.topk(
-                    total_scores_rnnt, k=beam_width, dim=-1, largest=True, sorted=True)
+            hyps_b = self.initialize_beam([2], {"hxs":hxs, "cxs":cxs})
+            eout = eouts[b:b + 1, :elens[b]]
+            frame_size = eout.size(1)
+            
+            for t in range(frame_size):
+                hyps_b, state_cache = self.batchfy_pred_net(hyps_b, state_cache)
+                douts = torch.cat([beam['dout'] for beam in hyps_b], dim=0)
+                logits = self.joint(eout[:, t:t + 1].repeat([len(hyps_b), 1, 1]), douts)
+                
+                scores_rnnt = torch.log_softmax(logits.squeeze(2).squeeze(1), dim=-1)  # `[B, vocab]`
 
-                for k in range(beam_width):
-                    idx = topk_ids[k].item()
+                new_hyps = []
+                for j, beam in enumerate(hyps_b):
+                    # Transducer scores
+                    total_scores_rnnt = beam['score_rnnt'] + scores_rnnt[j]
+                    total_scores_topk, topk_ids = torch.topk(
+                        total_scores_rnnt, k=beam_width, dim=-1, largest=True, sorted=True)
 
-                    if idx == self.blank:
-                        new_hyps.append(beam.copy())
-                        new_hyps[-1]['score_rnnt'] += scores_rnnt[j, self.blank].item()
-                        new_hyps[-1]['update_pred_net'] = False
-                        continue
+                    for k in range(beam_width):
+                        idx = topk_ids[k].item()
 
-                    total_score_rnnt = total_scores_topk[k].item()
+                        if idx == self.blank:
+                            new_hyps.append(beam.copy())
+                            new_hyps[-1]['score_rnnt'] += scores_rnnt[j, self.blank].item()
+                            new_hyps[-1]['update_pred_net'] = False
+                            continue
 
-                    hyp_ids = beam['hyp'] + [idx]
-                    hyp_times = beam['time'] + [t*40]
-                    hyp_ids_str = ' '.join(list(map(str, hyp_ids)))
-                    exist_cache = hyp_ids_str in state_cache.keys()
-                    if exist_cache:
-                        # from cache
-                        dout = state_cache[hyp_ids_str]['dout']
-                        hxs = state_cache[hyp_ids_str]['hxs']
-                        cxs = state_cache[hyp_ids_str]['cxs']
-                    else:
-                        # prediction network and LM will be updated later
-                        dout = None
-                        hxs = beam['hxs']
-                        cxs = beam['cxs']
+                        total_score_rnnt = total_scores_topk[k].item()
 
-                    new_hyps.append({'hyp': hyp_ids,
-                                     'time': hyp_times,
-                                     'hyp_ids_str': hyp_ids_str,
-                                     'score_rnnt': total_score_rnnt,
-                                     'dout': dout,
-                                     'hxs': hxs,
-                                     'cxs': cxs,
-                                     'update_pred_net': not exist_cache})
+                        hyp_ids = beam['hyp'] + [idx]
+                        hyp_times = beam['time'] + [t*40]
+                        hyp_ids_str = ' '.join(list(map(str, hyp_ids)))
+                        exist_cache = hyp_ids_str in state_cache.keys()
+                        if exist_cache:
+                            # from cache
+                            dout = state_cache[hyp_ids_str]['dout']
+                            dstate = state_cache[hyp_ids_str]['dstate']
+                        else:
+                            # prediction network and LM will be updated later
+                            dout = None
+                            dstate = beam['dstate']
 
-            # Local pruning
-            new_hyps = sorted(new_hyps, key=lambda x: x['score_rnnt'], reverse=True)
-            new_hyps = self.merge_rnnt_path(new_hyps, True)
-            hpys = new_hyps[:beam_width]
+                        new_hyps.append({'hyp': hyp_ids,
+                                        'time': hyp_times,
+                                        'hyp_ids_str': hyp_ids_str,
+                                        'score_rnnt': total_score_rnnt,
+                                        'dout': dout,
+                                        'dstate': dstate,
+                                        'update_pred_net': not exist_cache})
 
-        return 
+                # Local pruning
+                new_hyps = sorted(new_hyps, key=lambda x: x['score_rnnt'], reverse=True)
+                new_hyps = self.merge_rnnt_path(new_hyps, True)
+                hyps_b = new_hyps[:beam_width]
+            hyps += [hyps_b]
+        self.training = True
+
+        return hyps
