@@ -22,10 +22,6 @@ class Scheduler(object):
                 token, idx = line.strip().split(" ")
                 idx = int(eval(idx))
                 self.id2token[idx] = token
-
-
-        if args.resume != "":
-            self.optimizer.load(torch.load(args.resume,map_location=self.device)["optimizer_state_dict"])
     
     
     def _update_lr(self):

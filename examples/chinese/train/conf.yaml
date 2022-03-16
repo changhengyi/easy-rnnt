@@ -8,8 +8,8 @@ testset_paths:
 dict: /home/changhengyi/rnnt-exp/chinese/dict/dict.txt
 wp_model: ""
 save_path: /home/changhengyi/rnnt-exp/chinese/asr
-resume: ""
-# resume: "/home/changhengyi/rnnt-exp/chinese/asr/best.model"
+# resume: ""
+resume: "/home/changhengyi/rnnt-exp/chinese/asr/best.model"
 
 ### data
 num_workers: 2
@@ -44,10 +44,10 @@ optimizer: adam
 n_epochs: 30
 print_step: 1000
 sort_stop_epoch: 100
-lr: 1e-3
+lr: 0.0002
 weight_decay: 1e-6
-lr_decay_start_epoch: 20
-lr_decay_rate: 0.85
+lr_decay_start_epoch: 3
+lr_decay_rate: 0.95
 dynamic_batching: True
 shuffle_bucket: False
 

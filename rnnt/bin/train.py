@@ -24,11 +24,6 @@ def train(args):
     logging.basicConfig(filename = log_path, level = logging.INFO, format = '%(asctime)s[%(levelname)s]: %(message)s')
     logger = logging.getLogger()
 
-    ### init data loader
-    test_loaders = [build_dataloader(args, x, 1, num_workers=args.num_workers) for x in args.testset_paths]
-    train_loader = build_dataloader(args, args.trainset_path, args.batch_size, num_workers=args.num_workers, pin_memory=False, distributed=True)
-    dev_loader = build_dataloader(args, args.devset_path, 1, num_workers=args.num_workers)
-
     ### init model
     model = ASR(args)
     n = torch.cuda.device_count() // args.local_world_size
@@ -41,7 +36,15 @@ def train(args):
     ### init optimizer and scheduler
     parameters = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
+    if args.resume != "":
+        print("Load optimizer params.")
+        optimizer.load_state_dict(torch.load(args.resume, map_location='cuda:{}'.format(device_ids[0]))["optimizer_state_dict"])
     scheduler = Scheduler(args, optimizer, logger)
+
+    ### init data loader
+    test_loaders = [build_dataloader(args, x, 1, num_workers=args.num_workers) for x in args.testset_paths]
+    train_loader = build_dataloader(args, args.trainset_path, args.batch_size, num_workers=args.num_workers, pin_memory=False, distributed=True)
+    dev_loader = build_dataloader(args, args.devset_path, 1, num_workers=args.num_workers)
 
     # # 临时的，用于测试
     # if args.local_rank == 0:

@@ -14,7 +14,7 @@ class ASRDataset(Dataset):
                             delimiter='\t', chunksize=1000000)
         df = pd.concat(chunk)
         df = df.loc[:, ['utt_id', 'speaker', 'feat_path',
-                        'xlen', 'xdim', 'text', 'token_id', 'ylen', 'ydim']]
+                        'xlen', 'xdim', 'text', 'token_id', 'ylen', 'ydim', 'textorg']]
 
         # remove some invalid uttrances
         n_utts = len(df)
@@ -56,6 +56,7 @@ class ASRDataset(Dataset):
 
         # main outputs
         text = self.df['text'][i]
+        textorg = self.df['textorg'][i]
         ys = list(map(int, str(self.df['token_id'][i]).split()))
 
         mini_batch_dict = {
@@ -64,7 +65,8 @@ class ASRDataset(Dataset):
             'ys': ys,
             'utt_ids': self.df['utt_id'][i],
             'speakers': self.df['speaker'][i],
-            'text': text
+            'text': text,
+            'textorg': textorg
         }
 
         return mini_batch_dict

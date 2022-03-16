@@ -8,7 +8,7 @@ import warp_rnnt
 from rnnt.utils import *
 from rnnt.model.model_base import ModelBase
 from rnnt.model.ctc import CTC
-
+from rnnt.model.lm import NgramLM
 
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,8 @@ class RNNTransducer(ModelBase):
 
 
         self.reset_parameters(self.param_init)
+
+        self.lm = NgramLM()
 
         
     def reset_parameters(self, param_init):
@@ -264,13 +266,17 @@ class RNNTransducer(ModelBase):
         return hyps
 
 
-    def initialize_beam(self, hpy, dstate):
+    def initialize_beam(self, hpy, dstate, lmstate):
         hyps = [{'hyp': hpy,
                  'time':[0],
                  'hyp_ids_str': '',
+                 'score':0.,
                  'score_rnnt': 0.,
+                 'score_lm': 0.,
                  'dout': None,
                  'dstate': dstate,
+                 'lmstate': lmstate,
+                 'words_list' : [],
                  'path_len': 0,
                  'update_pred_net': True}]
         return hyps
@@ -288,11 +294,11 @@ class RNNTransducer(ModelBase):
                         'cxs': torch.cat([beam['dstate']['cxs'] for beam in batch_hyps], dim=1)}
         douts, dstates = self.recurrency(self.embed_token_id(ys), dstates_prev)
 
-        hyp_ids_strs = [beam['hyp_ids_str'] for beam in hyps]
+        hyp_ids_and_words_strs = [beam['hyp_ids_str'] + "".join(beam['words_list']) for beam in hyps]
         for i, beam in enumerate(batch_hyps):
             dstate = {'hxs': dstates['hxs'][:, i:i + 1],
                       'cxs': dstates['cxs'][:, i:i + 1]}
-            index = hyp_ids_strs.index(beam['hyp_ids_str'])
+            index = hyp_ids_and_words_strs.index(beam['hyp_ids_str'] + "".join(beam['words_list']))
 
             hyps[index]['dout'] = douts[i:i + 1]
             hyps[index]['dstate'] = dstate
@@ -311,24 +317,24 @@ class RNNTransducer(ModelBase):
     def merge_rnnt_path(self, hyps, merge_prob=False):
         hyps_merged = {}
         for beam in hyps:
-            hyp_ids_str = beam['hyp_ids_str']
-            if hyp_ids_str not in hyps_merged.keys():
-                hyps_merged[hyp_ids_str] = beam
+            hyp_ids_and_words_str = beam['hyp_ids_str'] + "".join(beam['words_list'])
+            if hyp_ids_and_words_str not in hyps_merged.keys():
+                hyps_merged[hyp_ids_and_words_str] = beam
             else:
                 if merge_prob:
                     for k in ['score_rnnt']:
-                        hyps_merged[hyp_ids_str][k] = np.logaddexp(hyps_merged[hyp_ids_str][k], beam[k])
+                        hyps_merged[hyp_ids_and_words_str][k] = np.logaddexp(hyps_merged[hyp_ids_and_words_str][k], beam[k])
                     # NOTE: LM scores should not be merged
 
-                elif beam['score_rnnt'] > hyps_merged[hyp_ids_str]['score_rnnt']:
+                elif beam['score'] > hyps_merged[hyp_ids_and_words_str]['score']:
                     # Otherwise, pick up a path having higher log-probability
-                    hyps_merged[hyp_ids_str] = beam
+                    hyps_merged[hyp_ids_and_words_str] = beam
 
         hyps = [v for v in hyps_merged.values()]
         return hyps
 
 
-    def beam_search(self, eouts, elens, beam_width):
+    def beam_search(self, eouts, elens, beam_width, lm_weight = 0.2):
         self.training = False
         bs = eouts.size(0)
         hyps = []
@@ -336,7 +342,9 @@ class RNNTransducer(ModelBase):
             state_cache = OrderedDict()
             hxs, cxs = eouts.new_zeros(2, 1, 1024), eouts.new_zeros(2, 1, 1024)
 
-            hyps_b = self.initialize_beam([2], {"hxs":hxs, "cxs":cxs})
+            first_lm_state = self.lm.get_first_state()
+
+            hyps_b = self.initialize_beam([2], {"hxs":hxs, "cxs":cxs}, first_lm_state)
             eout = eouts[b:b + 1, :elens[b]]
             frame_size = eout.size(1)
             
@@ -351,46 +359,60 @@ class RNNTransducer(ModelBase):
                 for j, beam in enumerate(hyps_b):
                     # Transducer scores
                     total_scores_rnnt = beam['score_rnnt'] + scores_rnnt[j]
-                    total_scores_topk, topk_ids = torch.topk(
-                        total_scores_rnnt, k=beam_width, dim=-1, largest=True, sorted=True)
+                    total_scores_topk, topk_ids = torch.topk(total_scores_rnnt, k=beam_width, dim=-1, largest=True, sorted=True)
 
-                    for k in range(beam_width):
-                        idx = topk_ids[k].item()
-
+                    words_lists = self.lm.pinyins2words(total_scores_topk, topk_ids, beam_width, beam['lmstate'], beam['score_lm'], lm_weight)
+                    
+                    for k in range(len(words_lists)):
+                        idx = words_lists[k][1]
                         if idx == self.blank:
                             new_hyps.append(beam.copy())
+                            new_hyps[-1]['score'] += scores_rnnt[j, self.blank].item()
                             new_hyps[-1]['score_rnnt'] += scores_rnnt[j, self.blank].item()
                             new_hyps[-1]['update_pred_net'] = False
                             continue
 
-                        total_score_rnnt = total_scores_topk[k].item()
+                        total_score_rnnt = words_lists[k][2]
+                        total_score_lm = words_lists[k][3]
+                        total_score = total_score_rnnt + total_score_lm * lm_weight
 
                         hyp_ids = beam['hyp'] + [idx]
                         hyp_times = beam['time'] + [t*40]
                         hyp_ids_str = ' '.join(list(map(str, hyp_ids)))
                         exist_cache = hyp_ids_str in state_cache.keys()
+                        lmstate = self.lm.update(beam['lmstate'], words_lists[k][0])
+                        words_list = beam['words_list'] + [words_lists[k][0]]
+
                         if exist_cache:
                             # from cache
                             dout = state_cache[hyp_ids_str]['dout']
                             dstate = state_cache[hyp_ids_str]['dstate']
                         else:
-                            # prediction network and LM will be updated later
+                            # prediction network will be updated later
                             dout = None
                             dstate = beam['dstate']
 
                         new_hyps.append({'hyp': hyp_ids,
                                         'time': hyp_times,
                                         'hyp_ids_str': hyp_ids_str,
+                                        'score': total_score,
                                         'score_rnnt': total_score_rnnt,
+                                        'score_lm':total_score_lm,
                                         'dout': dout,
                                         'dstate': dstate,
+                                        'lmstate': lmstate,
+                                        'words_list' : words_list,
                                         'update_pred_net': not exist_cache})
 
-                # Local pruning
-                new_hyps = sorted(new_hyps, key=lambda x: x['score_rnnt'], reverse=True)
-                new_hyps = self.merge_rnnt_path(new_hyps, True)
+                new_hyps = sorted(new_hyps, key=lambda x: x['score'], reverse=True)
+                new_hyps = self.merge_rnnt_path(new_hyps, False)
                 hyps_b = new_hyps[:beam_width]
+                
+                for hyp in hyps_b:
+                    logger.debug(hyp['words_list'], "total:", hyp['score'], "rnnt:", hyp['score_rnnt'], "lm:", hyp['score_lm'])
+
             hyps += [hyps_b]
+        
         self.training = True
 
         return hyps

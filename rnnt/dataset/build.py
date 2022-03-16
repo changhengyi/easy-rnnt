@@ -4,10 +4,10 @@ from rnnt.dataset.dataloader import ASRDataLoader
 from rnnt.dataset.sampler import ASRBatchSampler
 
 
-def build_dataloader(args, tsv_path, batch_size, num_workers=0, pin_memory=False, distributed=False, resume_epoch=0):
+def build_dataloader(args, tsv_path, batch_size, cmvn_path=None, num_workers=0, pin_memory=False, distributed=False, resume_epoch=0):
 
     dataset = ASRDataset(tsv_path=tsv_path,
-                            cmvn_path = args.cmvn_path,
+                            cmvn_path = cmvn_path,
                             dict_path=args.dict,
                             wp_model=args.wp_model,
                             min_n_frames=args.min_n_frames,
